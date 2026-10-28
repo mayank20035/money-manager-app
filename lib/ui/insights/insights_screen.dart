@@ -283,7 +283,8 @@ class _CategoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final focus = touched != null && touched! < data.length ? data[touched!] : null;
+    final i = touched;
+    final focus = i != null && i >= 0 && i < data.length ? data[i] : null;
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -299,9 +300,12 @@ class _CategoryCard extends StatelessWidget {
                       sectionsSpace: 3,
                       centerSpaceRadius: 62,
                       pieTouchData: PieTouchData(
+                        // React to taps only, so scrolling past the chart doesn't change the
+                        // selection. The hole and gaps report index -1: treat that as "none".
                         touchCallback: (event, response) {
-                          if (!event.isInterestedForInteractions) return;
-                          onTouch(response?.touchedSection?.touchedSectionIndex);
+                          if (event is! FlTapUpEvent) return;
+                          final index = response?.touchedSection?.touchedSectionIndex ?? -1;
+                          onTouch(index < 0 || index == touched ? null : index);
                         },
                       ),
                       sections: [
@@ -315,14 +319,17 @@ class _CategoryCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(focus == null ? 'Total spent' : categoryById(focus.key).name,
-                          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
-                      MoneyText(focus?.value ?? total,
-                          dropZeroDecimals: true, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                    ],
+                  // Let taps on the label reach the chart, so tapping the middle clears the focus.
+                  IgnorePointer(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(focus == null ? 'Total spent' : categoryById(focus.key).name,
+                            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                        MoneyText(focus?.value ?? total,
+                            dropZeroDecimals: true, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+                      ],
+                    ),
                   ),
                 ],
               ),

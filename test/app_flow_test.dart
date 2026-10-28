@@ -1,6 +1,8 @@
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:money_manager/app.dart';
+import 'package:money_manager/data/models.dart';
 import 'package:money_manager/data/storage.dart';
 import 'package:money_manager/state/money_store.dart';
 import 'package:money_manager/state/settings_store.dart';
@@ -87,6 +89,43 @@ void main() {
     expect(trip.goalMinor, 2000000);
     expect(money.balanceOf(trip.id), 500000);
     expect(find.text('25% of ₹20,000'), findsOneWidget);
+  });
+
+  testWidgets('tapping the spending donut never breaks the insights card', (tester) async {
+    final money = await pumpApp(tester);
+    final usable = money.buckets.first;
+    money.addIncome(bucketId: usable.id, amountMinor: 500000);
+    money.addExpenses(bucketId: usable.id, items: const [
+      ExpenseItem(amountMinor: 120000, categoryId: 'transport'),
+      ExpenseItem(amountMinor: 45000, categoryId: 'food'),
+    ]);
+    await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('Insights')));
+    await tester.pumpAndSettle();
+
+    final donut = find.byType(PieChart);
+    await tester.ensureVisible(donut);
+    await tester.pumpAndSettle();
+
+    final box = tester.getRect(donut);
+    // Taps outside the ring (the hole, or the empty space beside it) report
+    // slice index -1, which used to crash the card.
+    for (final spot in [box.center, Offset(box.left + 10, box.center.dy)]) {
+      await tester.tapAt(spot);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('Total spent'), findsOneWidget);
+    }
+
+    // A slice focuses its category (the ring spans radius 62..88)…
+    await tester.tapAt(box.center - const Offset(0, 75));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Total spent'), findsNothing);
+
+    // …and tapping the middle clears it again.
+    await tester.tapAt(box.center);
+    await tester.pumpAndSettle();
+    expect(find.text('Total spent'), findsOneWidget);
   });
 
   testWidgets('all tabs render', (tester) async {
