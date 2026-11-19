@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../core/categories.dart';
+import '../core/period.dart';
 import '../data/models.dart';
 import '../data/storage.dart';
 
@@ -16,6 +17,36 @@ class FlowSummary {
   /// Share of income kept, 0..1 (null when there was no income).
   double? get savingsRate => incomeMinor <= 0 ? null : netMinor / incomeMinor;
 }
+
+/// Where one bucket's money came from and went during a period.
+class BucketFlow {
+  BucketFlow(this.bucketId);
+
+  final String bucketId;
+
+  /// Balance at the start and at the end of the period.
+  int openingMinor = 0;
+  int closingMinor = 0;
+
+  int addedMinor = 0; // income
+  int movedInMinor = 0; // transfers from other buckets
+  int spentMinor = 0; // expenses
+  int movedOutMinor = 0; // transfers to other buckets
+  int adjustedMinor = 0; // balance corrections (signed)
+
+  final incomeBySource = <String, int>{};
+  final spendByCategory = <String, int>{};
+  final movedFrom = <String, int>{}; // bucket id → amount
+  final movedTo = <String, int>{}; // bucket id → amount
+
+  int get inflowMinor => addedMinor + movedInMinor;
+  int get outflowMinor => spentMinor + movedOutMinor;
+  int get netMinor => inflowMinor - outflowMinor;
+
+  bool get isQuiet => inflowMinor == 0 && outflowMinor == 0 && adjustedMinor == 0;
+}
+
+void _add(Map<String, int> map, String key, int value) => map[key] = (map[key] ?? 0) + value;
 
 class _Snapshot {
   const _Snapshot(this.buckets, this.txns);
@@ -108,14 +139,85 @@ class MoneyStore extends ChangeNotifier {
   }
 
   /// Spend per category for a month, largest first.
-  List<MapEntry<String, int>> spendByCategory(DateTime month) {
+  List<MapEntry<String, int>> spendByCategory(DateTime month) => spendByCategoryIn(txnsInMonth(month));
+
+  /// Spend per category across [txns], largest first.
+  List<MapEntry<String, int>> spendByCategoryIn(Iterable<Txn> txns) {
     final map = <String, int>{};
-    for (final t in txnsInMonth(month)) {
+    for (final t in txns) {
       if (t.type != TxnType.expense) continue;
-      final id = t.categoryId ?? 'other';
-      map[id] = (map[id] ?? 0) + t.amountMinor;
+      _add(map, t.categoryId ?? 'other', t.amountMinor);
     }
     return map.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  }
+
+  List<Txn> txnsIn(Period period) => _txns.where((t) => period.contains(t.date)).toList();
+
+  FlowSummary summaryIn(Period period) => summaryFor(txnsIn(period));
+
+  /// Per-bucket flows for [period], in bucket order.
+  List<BucketFlow> bucketFlows(Period period) {
+    final flows = {for (final b in _buckets) b.id: BucketFlow(b.id)};
+    for (final t in _txns) {
+      if (!t.date.isBefore(period.end)) continue;
+      final inPeriod = !t.date.isBefore(period.start);
+      for (final leg in t.legs) {
+        final f = flows[leg.bucketId];
+        if (f == null) continue;
+        final a = leg.amountMinor;
+        f.closingMinor += a;
+        if (!inPeriod) {
+          f.openingMinor += a;
+          continue;
+        }
+        switch (t.type) {
+          case TxnType.income:
+            if (a == 0) continue;
+            f.addedMinor += a;
+            _add(f.incomeBySource, t.categoryId ?? 'other_in', a);
+          case TxnType.expense:
+            f.spentMinor -= a;
+            _add(f.spendByCategory, t.categoryId ?? 'other', -a);
+          case TxnType.transfer:
+            if (a < 0) {
+              f.movedOutMinor -= a;
+              for (final to in t.legs.where((l) => l.amountMinor > 0)) {
+                _add(f.movedTo, to.bucketId, to.amountMinor);
+              }
+            } else if (a > 0) {
+              f.movedInMinor += a;
+              _add(f.movedFrom, t.primaryBucketId!, a);
+            }
+          case TxnType.adjustment:
+            f.adjustedMinor += a;
+        }
+      }
+    }
+    return flows.values.toList();
+  }
+
+  /// A bucket's balance at the end of each of [period]'s slots. Slots that
+  /// haven't started yet (later in the current period) are null.
+  List<int?> balanceSeries(String bucketId, Period period) {
+    final slots = period.slots;
+    final deltas = List<int>.filled(slots.length, 0);
+    var opening = 0;
+    for (final t in _txns) {
+      if (!t.date.isBefore(period.end)) continue;
+      final d = t.deltaFor(bucketId);
+      if (d == 0) continue;
+      if (t.date.isBefore(period.start)) {
+        opening += d;
+      } else {
+        deltas[period.slotOf(t.date)] += d;
+      }
+    }
+    final now = DateTime.now();
+    var running = opening;
+    return [
+      for (var i = 0; i < slots.length; i++)
+        if (slots[i].isAfter(now)) null else running += deltas[i],
+    ];
   }
 
   // -------------------------------------------------------------- mutations
