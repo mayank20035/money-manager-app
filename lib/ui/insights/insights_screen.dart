@@ -6,11 +6,13 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/categories.dart';
+import '../../core/period.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
 import '../../state/money_store.dart';
 import '../../state/settings_store.dart';
 import '../widgets/common.dart';
+import 'bucket_flow.dart';
 
 class InsightsScreen extends StatefulWidget {
   const InsightsScreen({super.key});
@@ -20,16 +22,11 @@ class InsightsScreen extends StatefulWidget {
 }
 
 class _InsightsScreenState extends State<InsightsScreen> {
-  DateTime _month = DateTime(DateTime.now().year, DateTime.now().month);
+  Period _period = Period.current(PeriodKind.month);
   int? _touchedSlice;
 
-  bool get _isCurrentMonth {
-    final now = DateTime.now();
-    return _month.year == now.year && _month.month == now.month;
-  }
-
-  void _shift(int months) => setState(() {
-        _month = DateTime(_month.year, _month.month + months);
+  void _show(Period p) => setState(() {
+        _period = p;
         _touchedSlice = null;
       });
 
@@ -39,32 +36,18 @@ class _InsightsScreenState extends State<InsightsScreen> {
     final settings = context.watch<SettingsStore>();
     final colors = MoneyColors.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final summary = store.monthSummary(_month);
-    final byCategory = store.spendByCategory(_month);
-    final daysInMonth = DateTime(_month.year, _month.month + 1, 0).day;
-    final daysElapsed = _isCurrentMonth ? DateTime.now().day : daysInMonth;
+    final txns = store.txnsIn(_period);
+    final summary = store.summaryFor(txns);
+    final byCategory = store.spendByCategoryIn(txns);
+    // The trend ends at the period's last month, or this month for the current period.
+    final lastDay = _period.isCurrent ? DateTime.now() : _period.end.subtract(const Duration(days: 1));
 
     return Scaffold(
       appBar: AppBar(title: const Text('Insights')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
         children: [
-          Row(
-            children: [
-              IconButton.filledTonal(onPressed: () => _shift(-1), icon: const Icon(Icons.chevron_left_rounded)),
-              Expanded(
-                child: Text(
-                  DateFormat('MMMM yyyy').format(_month),
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
-                ),
-              ),
-              IconButton.filledTonal(
-                onPressed: _isCurrentMonth ? null : () => _shift(1),
-                icon: const Icon(Icons.chevron_right_rounded),
-              ),
-            ],
-          ),
+          _PeriodPicker(period: _period, onChanged: _show),
           const SizedBox(height: 12),
           GridView.count(
             crossAxisCount: 2,
@@ -86,7 +69,7 @@ class _InsightsScreenState extends State<InsightsScreen> {
                 label: 'Avg. spend / day',
                 icon: Icons.calendar_today_rounded,
                 color: scheme.primary,
-                value: MoneyText(summary.expenseMinor ~/ math.max(1, daysElapsed), style: _statStyle),
+                value: MoneyText(summary.expenseMinor ~/ math.max(1, _period.daysElapsed), style: _statStyle),
               ),
             ],
           ),
@@ -94,14 +77,14 @@ class _InsightsScreenState extends State<InsightsScreen> {
             const SizedBox(height: 10),
             _SavingsRate(rate: summary.savingsRate!),
           ],
-          if (settings.monthlyBudgetMinor != null) ...[
+          if (settings.monthlyBudgetMinor != null && _period.kind == PeriodKind.month) ...[
             const SizedBox(height: 10),
             _BudgetCard(spent: summary.expenseMinor, budget: settings.monthlyBudgetMinor!),
           ],
           const SizedBox(height: 18),
           const SectionHeader('Where the money went'),
           if (byCategory.isEmpty)
-            const Card(child: EmptyState(emoji: '🥧', title: 'No spending this month'))
+            Card(child: EmptyState(emoji: '🥧', title: 'No spending this ${_period.noun}'))
           else
             _CategoryCard(
               data: byCategory,
@@ -110,11 +93,21 @@ class _InsightsScreenState extends State<InsightsScreen> {
               onTouch: (i) => setState(() => _touchedSlice = i),
             ),
           const SizedBox(height: 18),
-          const SectionHeader('Daily spending'),
-          _DailyChart(store: store, month: _month),
+          SectionHeader(
+            'Bucket flow',
+            trailing: Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Text('In & out per bucket',
+                  style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontWeight: FontWeight.w600)),
+            ),
+          ),
+          BucketFlowSection(period: _period),
+          const SizedBox(height: 18),
+          SectionHeader(_period.kind == PeriodKind.year ? 'Monthly spending' : 'Daily spending'),
+          _SpendingChart(store: store, period: _period),
           const SizedBox(height: 18),
           const SectionHeader('Last 6 months'),
-          _TrendChart(store: store, endMonth: _month),
+          _TrendChart(store: store, endMonth: DateTime(lastDay.year, lastDay.month)),
           const SizedBox(height: 18),
           const SectionHeader('Balance by bucket'),
           _BucketShare(store: store),
@@ -124,6 +117,88 @@ class _InsightsScreenState extends State<InsightsScreen> {
   }
 
   static const _statStyle = TextStyle(fontSize: 18, fontWeight: FontWeight.w800);
+}
+
+/// Week / Month / Year switch plus previous/next navigation. Swiping the label
+/// sideways also moves between periods.
+class _PeriodPicker extends StatelessWidget {
+  const _PeriodPicker({required this.period, required this.onChanged});
+
+  final Period period;
+  final ValueChanged<Period> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final canGoForward = !period.isCurrent;
+    final relative = period.relative;
+
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<PeriodKind>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(value: PeriodKind.week, label: Text('Week')),
+              ButtonSegment(value: PeriodKind.month, label: Text('Month')),
+              ButtonSegment(value: PeriodKind.year, label: Text('Year')),
+            ],
+            selected: {period.kind},
+            onSelectionChanged: (s) => onChanged(period.as(s.first)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            IconButton.filledTonal(
+              tooltip: 'Previous ${period.noun}',
+              onPressed: () => onChanged(period.shift(-1)),
+              icon: const Icon(Icons.chevron_left_rounded),
+            ),
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragEnd: (d) {
+                  final v = d.primaryVelocity ?? 0;
+                  if (v > 200) onChanged(period.shift(-1));
+                  if (v < -200 && canGoForward) onChanged(period.shift(1));
+                },
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, a) => FadeTransition(
+                    opacity: a,
+                    child: SlideTransition(
+                      position: Tween(begin: const Offset(0, 0.25), end: Offset.zero).animate(a),
+                      child: child,
+                    ),
+                  ),
+                  child: Column(
+                    key: ValueKey(period),
+                    children: [
+                      Text(
+                        period.label,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                      if (relative != null)
+                        Text(relative,
+                            style: TextStyle(fontSize: 12, color: scheme.primary, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            IconButton.filledTonal(
+              tooltip: 'Next ${period.noun}',
+              onPressed: canGoForward ? () => onChanged(period.shift(1)) : null,
+              icon: const Icon(Icons.chevron_right_rounded),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
 class _StatTile extends StatelessWidget {
@@ -423,23 +498,34 @@ class _CategoryRow extends StatelessWidget {
   }
 }
 
-class _DailyChart extends StatelessWidget {
-  const _DailyChart({required this.store, required this.month});
+class _SpendingChart extends StatelessWidget {
+  const _SpendingChart({required this.store, required this.period});
 
   final MoneyStore store;
-  final DateTime month;
+  final Period period;
+
+  String _axisLabel(int i, DateTime slot) => switch (period.kind) {
+        PeriodKind.week => DateFormat('E').format(slot),
+        PeriodKind.month => (i == 0 || (i + 1) % 5 == 0) ? '${i + 1}' : '',
+        PeriodKind.year => DateFormat('MMMMM').format(slot),
+      };
 
   @override
   Widget build(BuildContext context) {
     final colors = MoneyColors.of(context);
     final scheme = Theme.of(context).colorScheme;
     final settings = context.watch<SettingsStore>();
-    final days = DateTime(month.year, month.month + 1, 0).day;
-    final perDay = List<int>.filled(days, 0);
-    for (final t in store.txnsInMonth(month)) {
-      if (t.type == TxnType.expense) perDay[t.date.day - 1] += t.amountMinor;
+    final slots = period.slots;
+    final perSlot = List<int>.filled(slots.length, 0);
+    for (final t in store.txnsIn(period)) {
+      if (t.type == TxnType.expense) perSlot[period.slotOf(t.date)] += t.amountMinor;
     }
-    final maxY = perDay.fold(0, math.max);
+    final maxY = perSlot.fold(0, math.max);
+    final barWidth = switch (period.kind) {
+      PeriodKind.week => 18.0,
+      PeriodKind.month => 5.0,
+      PeriodKind.year => 12.0,
+    };
 
     return Card(
       child: Padding(
@@ -451,7 +537,7 @@ class _DailyChart extends StatelessWidget {
               : BarChart(
                   BarChartData(
                     maxY: maxY * 1.15,
-                    alignment: BarChartAlignment.spaceBetween,
+                    alignment: period.kind == PeriodKind.month ? BarChartAlignment.spaceBetween : BarChartAlignment.spaceAround,
                     gridData: FlGridData(
                       drawVerticalLine: false,
                       horizontalInterval: maxY / 3,
@@ -478,11 +564,12 @@ class _DailyChart extends StatelessWidget {
                           showTitles: true,
                           reservedSize: 22,
                           getTitlesWidget: (v, _) {
-                            final d = v.toInt() + 1;
-                            if (d != 1 && d % 5 != 0) return const SizedBox.shrink();
+                            final i = v.toInt();
+                            final label = _axisLabel(i, slots[i]);
+                            if (label.isEmpty) return const SizedBox.shrink();
                             return Padding(
                               padding: const EdgeInsets.only(top: 4),
-                              child: Text('$d', style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)),
+                              child: Text(label, style: TextStyle(fontSize: 10, color: scheme.onSurfaceVariant)),
                             );
                           },
                         ),
@@ -493,17 +580,18 @@ class _DailyChart extends StatelessWidget {
                       touchTooltipData: BarTouchTooltipData(
                         getTooltipColor: (_) => scheme.inverseSurface,
                         getTooltipItem: (group, _, rod, _) => BarTooltipItem(
-                          '${group.x + 1} ${DateFormat('MMM').format(month)}\n${settings.format.format(rod.toY.round())}',
+                          '${DateFormat(period.kind == PeriodKind.year ? 'MMM yyyy' : 'EEE, d MMM').format(slots[group.x])}\n'
+                          '${settings.format.format(rod.toY.round())}',
                           TextStyle(color: scheme.onInverseSurface, fontWeight: FontWeight.w700, fontSize: 12),
                         ),
                       ),
                     ),
                     barGroups: [
-                      for (var i = 0; i < days; i++)
+                      for (var i = 0; i < slots.length; i++)
                         BarChartGroupData(x: i, barRods: [
                           BarChartRodData(
-                            toY: perDay[i].toDouble(),
-                            width: 5,
+                            toY: perSlot[i].toDouble(),
+                            width: barWidth,
                             color: colors.expense,
                             borderRadius: BorderRadius.circular(3),
                           ),

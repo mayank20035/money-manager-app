@@ -6,6 +6,8 @@ import 'package:money_manager/data/models.dart';
 import 'package:money_manager/data/storage.dart';
 import 'package:money_manager/state/money_store.dart';
 import 'package:money_manager/state/settings_store.dart';
+import 'package:money_manager/ui/insights/bucket_flow.dart';
+import 'package:money_manager/ui/insights/insights_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 Future<MoneyStore> pumpApp(WidgetTester tester) async {
@@ -126,6 +128,57 @@ void main() {
     await tester.tapAt(box.center);
     await tester.pumpAndSettle();
     expect(find.text('Total spent'), findsOneWidget);
+  });
+
+  testWidgets('bucket flow shows each bucket and expands into a breakdown', (tester) async {
+    final money = await pumpApp(tester);
+    final [usable, invested] = money.buckets;
+    money.addIncome(bucketId: usable.id, amountMinor: 5000000, shares: {invested.id: 1500000});
+    money.addExpenses(bucketId: usable.id, items: const [ExpenseItem(amountMinor: 120000, categoryId: 'transport')]);
+    money.transfer(fromId: usable.id, shares: {invested.id: 100000});
+    money.adjustBalance(invested.id, money.balanceOf(invested.id) + 50000);
+
+    await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text('Insights')));
+    await tester.pumpAndSettle();
+    // Insights builds lazily: scroll its list to reach the section.
+    final list = find.descendant(of: find.byType(InsightsScreen), matching: find.byType(Scrollable)).first;
+    final section = find.byType(BucketFlowSection);
+    await tester.scrollUntilVisible(section, 250, scrollable: list);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Spent the most'), findsOneWidget);
+    // Later highlight cards sit off-screen in the sideways list.
+    expect(find.text('Grew the most', skipOffstage: false), findsOneWidget);
+    expect(find.text('Biggest move', skipOffstage: false), findsOneWidget);
+    expect(find.text('CAME IN'), findsNothing);
+    // The adjustment is named on Invested Money's row.
+    expect(find.text(' adjusted', skipOffstage: false), findsOneWidget);
+
+    // Expand Usable Money.
+    final usableRow = find.descendant(of: section, matching: find.text('Usable Money'));
+    await tester.scrollUntilVisible(usableRow, 150, scrollable: list);
+    await tester.tap(usableRow);
+    await tester.pumpAndSettle();
+    expect(find.text('CAME IN'), findsOneWidget);
+    expect(find.text('WENT OUT'), findsOneWidget);
+    expect(find.text('Salary'), findsOneWidget);
+    expect(find.text('To Invested Money'), findsOneWidget);
+    expect(find.text('Open Usable Money'), findsOneWidget);
+    expect(find.byType(LineChart), findsWidgets);
+
+    // Week and year views work, and an empty past year says so.
+    for (final (kind, label) in [('Week', 'This week'), ('Year', 'This year')]) {
+      await tester.scrollUntilVisible(find.text(kind), -300, scrollable: list);
+      await tester.tap(find.text(kind));
+      await tester.pumpAndSettle();
+      expect(find.text(label), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    }
+    await tester.tap(find.byTooltip('Previous year'));
+    await tester.pumpAndSettle();
+    expect(find.text('Last year'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('No bucket activity this year'), 250, scrollable: list);
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('all tabs render', (tester) async {
