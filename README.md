@@ -21,7 +21,9 @@ design of this version.
 - Full **activity ledger** with search, filters, day grouping, swipe-to-delete (balances reverse automatically)
 - **Undo** after every action
 - **Categories** for spends and income sources
-- **Insights**: monthly in/out/net, savings rate, category donut, daily spending, 6-month trend, balance by bucket
+- **Insights** by week, month or year: in/out/net, savings rate, category donut, spending chart, 6-month trend, balance by bucket
+- **Bucket flow**: how much came into and went out of each bucket, with highlights (spent the most, grew the most,
+  biggest move), a balance chart for the period and a breakdown by source, category and transfer
 - **Savings goals** per bucket and a **monthly budget**
 - **Calculator keypad** (`450+120×2`)
 - Split by **% or amount**, "split equally", live allocation bar, remembers your last split per bucket
